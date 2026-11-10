@@ -54,9 +54,10 @@ jobs:
             *.json
           sparse-checkout-cone-mode: false
 
-      - name: Materialize shard audio (sparse, shard only)
+      - name: Materialize shard audio (git archive, exact paths)
         run: |
           set -euo pipefail
+          mkdir -p audio
           cd src
           python3 -c "
           import json
@@ -65,23 +66,13 @@ jobs:
           open('/tmp/shard-files.txt','w',encoding='utf-8').write('\n'.join(want))
           print(f'shard $SHARD: {len(want)} files')
           "
-          # NUL-safe : les noms contiennent espaces et unicode, jamais de \n ?
-          # Si : on passe par Python pour sparse-checkout + checkout.
-          # no-cone : `sparse-checkout add` matche par préfixe (corrompt
-          # l'index). On repose la liste complète d'un coup via `set`.
-          python3 - <<'EOF'
-          import subprocess
-          files = open('/tmp/shard-files.txt', encoding='utf-8').read().splitlines()
-          patterns = ['*.py', '*.json'] + [f"/{f}" for f in files]
-          subprocess.run(['git', 'sparse-checkout', 'set', '--no-cone']
-                         + patterns, check=True)
-          subprocess.run(['git', 'checkout'], check=True)
-          import os
-          missing = [f for f in files if not os.path.exists(f)]
-          assert not missing, f"missing after checkout: {missing[:5]}"
-          print(f"materialized {len(files)} files")
-          EOF
-          du -sh .
+          # git archive prend des paths exacts (pas de glob) : crochets
+          # et parentheses passent. Fichier concis = checkout complet.
+          # NUL-safe via --paths-from-file.
+          tr '\\n' '\\0' < /tmp/shard-files.txt > /tmp/shard-files.bin
+          git archive HEAD --paths-from-file=/tmp/shard-files.bin \
+            | tar -x -C "$GITHUB_WORKSPACE/audio"
+          ls "$GITHUB_WORKSPACE/audio"/*.m4a | wc -l
 
       - name: Assemble static site (shard audio + fragment feed)
         run: |
@@ -91,7 +82,7 @@ jobs:
           import shutil
           files = open('/tmp/shard-files.txt', encoding='utf-8').read().splitlines()
           for f in files:
-              shutil.copy(f"src/{f}", f"site/files/{f}")
+              shutil.copy(f"$GITHUB_WORKSPACE/audio/{f}", f"site/files/{f}")
           print(f"copied {len(files)} files")
           EOF
           python3 src/build-feed.py --manifest src/tracks.json \
