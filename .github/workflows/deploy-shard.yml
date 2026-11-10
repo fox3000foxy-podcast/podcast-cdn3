@@ -1,0 +1,103 @@
+name: deploy-shard-from-private-src
+
+# Shard CDN : publie ~900 Mo d'audio sur GitHub Pages SANS les commiter.
+# Les .m4a sont checkout depuis le repo privé fox3000foxy/podcast-src
+# (sparse, shard N uniquement) dans le workspace éphémère du runner,
+# assemblés dans site/files/, puis déployés via l'artifact github-pages.
+# Aucun .m4a n'est jamais commité sur ce repo public.
+#
+# Déclenché par repository_dispatch (event-type: deploy-shard) depuis
+# podcast-src, avec client_payload.shard = numéro de CE shard.
+# Secrets : SRC_READ_TOKEN (PAT Contents read sur podcast-src).
+
+on:
+  repository_dispatch:
+    types: [deploy-shard]
+  workflow_dispatch:
+    inputs:
+      src_ref:
+        description: 'Ref of podcast-src to deploy'
+        required: false
+        default: 'master'
+      shard:
+        description: 'Shard number served by this repo'
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages-shard
+  cancel-in-progress: false
+
+env:
+  SHARD: ${{ github.event.client_payload.shard || inputs.shard }}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout manifest + script from private src
+        uses: actions/checkout@v4
+        with:
+          repository: fox3000foxy/podcast-src
+          token: ${{ secrets.SRC_READ_TOKEN }}
+          ref: ${{ github.event.client_payload.sha || inputs.src_ref }}
+          path: src
+          fetch-depth: 1
+          filter: blob:none
+          sparse-checkout: |
+            *.py
+            *.json
+          sparse-checkout-cone-mode: false
+
+      - name: Materialize shard audio (sparse, shard only)
+        run: |
+          set -euo pipefail
+          cd src
+          python3 -c "
+          import json
+          tracks = json.load(open('tracks.json', encoding='utf-8'))
+          want = sorted(t['file'] for t in tracks if t.get('shard') == $SHARD)
+          open('/tmp/shard-files.txt','w',encoding='utf-8').write('\n'.join(want))
+          print(f'shard $SHARD: {len(want)} files')
+          "
+          git sparse-checkout add $(cat /tmp/shard-files.txt | tr '\n' ' ')
+          git checkout -- $(cat /tmp/shard-files.txt | tr '\n' ' ')
+          du -sh .
+
+      - name: Assemble static site (shard audio + fragment feed)
+        run: |
+          set -euo pipefail
+          mkdir -p site/files
+          while IFS= read -r f; do cp "src/$f" "site/files/$f"; done < /tmp/shard-files.txt
+          python3 src/build-feed.py --manifest src/tracks.json \
+            --only-shard "$SHARD" \
+            --shard-base "https://podcast-cdn$SHARD.fox3000foxy.com/files" \
+            --out site/feed.xml
+          touch site/.nojekyll
+          echo "audio files: $(ls site/files/*.m4a | wc -l)"
+          du -sh site site/files
+
+      - name: Setup Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+          retention-days: 1
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
