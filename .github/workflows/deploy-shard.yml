@@ -69,7 +69,7 @@ jobs:
           # git archive prend des paths exacts (pas de glob) : crochets
           # et parentheses passent. Fichier concis = checkout complet.
           # NUL-safe via --paths-from-file.
-          tr '\\n' '\\0' < /tmp/shard-files.txt > /tmp/shard-files.bin
+          python3 -c "open('/tmp/shard-files.bin','wb').write(open('/tmp/shard-files.txt',encoding='utf-8').read().replace(chr(10),chr(0)).encode('utf-8'))"
           git archive HEAD --paths-from-file=/tmp/shard-files.bin \
             | tar -x -C "$GITHUB_WORKSPACE/audio"
           ls "$GITHUB_WORKSPACE/audio"/*.m4a | wc -l
