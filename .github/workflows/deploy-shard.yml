@@ -67,11 +67,18 @@ jobs:
           "
           # NUL-safe : les noms contiennent espaces et unicode, jamais de \n ?
           # Si : on passe par Python pour sparse-checkout + checkout.
+          # no-cone : `sparse-checkout add` matche par préfixe (corrompt
+          # l'index). On repose la liste complète d'un coup via `set`.
           python3 - <<'EOF'
           import subprocess
           files = open('/tmp/shard-files.txt', encoding='utf-8').read().splitlines()
-          subprocess.run(['git', 'sparse-checkout', 'add', '--'] + files, check=True)
-          subprocess.run(['git', 'checkout', '--'] + files, check=True)
+          patterns = ['*.py', '*.json'] + [f"/{f}" for f in files]
+          subprocess.run(['git', 'sparse-checkout', 'set', '--no-cone']
+                         + patterns, check=True)
+          subprocess.run(['git', 'checkout'], check=True)
+          import os
+          missing = [f for f in files if not os.path.exists(f)]
+          assert not missing, f"missing after checkout: {missing[:5]}"
           print(f"materialized {len(files)} files")
           EOF
           du -sh .
