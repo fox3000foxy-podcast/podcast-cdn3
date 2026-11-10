@@ -54,44 +54,31 @@ jobs:
             *.json
           sparse-checkout-cone-mode: false
 
-      - name: Materialize shard audio (ls-tree + cat-file, exact blobs)
+      - name: Materialize shard audio (sparse + escaped globs)
         run: |
           set -euo pipefail
-          mkdir -p audio
           cd src
           python3 - <<'PYEOF2'
-          import io, json, os, subprocess, tarfile
-          tracks = json.load(open('tracks.json', encoding='utf-8'))
+          import json, os, subprocess
           shard = int(os.environ['SHARD'])
+          tracks = json.load(open('tracks.json', encoding='utf-8'))
           want = sorted(t['file'] for t in tracks if t.get('shard') == shard)
+          open('/tmp/shard-files.txt','w',encoding='utf-8').write('\n'.join(want))
           print(f'shard {shard}: {len(want)} files')
-          # ls-tree -z : paths exacts (aucun glob, crochets/parenthèses
-          # OK). Puis UN SEUL git cat-file --batch (rapide) au lieu d'un
-          # appel par blob (lent sur clone partiel).
-          args = ['git', 'ls-tree', '-z', 'HEAD', '--'] + want
-          out = subprocess.run(args, capture_output=True, check=True).stdout
-          entries = out.rstrip(b'\0').split(b'\0') if out.strip(b'\0') else []
-          assert len(entries) == len(want), f"ls-tree returned {len(entries)}/{len(want)}"
-          dest = os.environ['GITHUB_WORKSPACE'] + '/audio'
-          batch = subprocess.run(
-              ['git', 'cat-file', '--batch'],
-              input=b''.join(
-                  e.split(b'\t')[0].split(b' ')[2] + b'\n' for e in entries),
-              capture_output=True, check=True).stdout
-          pos, done = 0, 0
-          for e in entries:
-              _meta, name = e.split(b'\t')
-              nl = batch.index(b'\n', pos)
-              _sha, typ, size = batch[pos:nl].split(b' ')
-              pos = nl + 1
-              blob = batch[pos:pos + int(size)]
-              pos += int(size) + 1
-              assert typ == b'blob', f"unexpected {typ} for {name}"
-              with open(os.path.join(dest, name.decode('utf-8')), 'wb') as fh:
-                  fh.write(blob)
-              done += 1
-          print(f"materialized {done} files")
+          # Sparse no-cone : les patterns sont des globs. On echappe les
+          # seuls caracteres speciaux glob ([ et * ?) presents dans les noms.
+          # Les parentheses et espaces passent tels quels.
+          def esc(p):
+              return p.replace('[', '[[]').replace('*', '[*]').replace('?', '[?]')
+          patterns = ['*.py', '*.json'] + ['/' + esc(f) for f in want]
+          subprocess.run(['git', 'sparse-checkout', 'set', '--no-cone']
+                         + patterns, check=True)
+          subprocess.run(['git', 'checkout'], check=True)
+          missing = [f for f in want if not os.path.exists(f)]
+          assert not missing, f"missing after checkout: {missing[:5]}"
+          print(f"materialized {len(want)} files")
           PYEOF2
+          du -sh .
 
       - name: Assemble static site (shard audio + fragment feed)
         run: |
@@ -102,7 +89,7 @@ jobs:
           files = open('/tmp/shard-files.txt', encoding='utf-8').read().splitlines()
           files = open('/tmp/shard-files.txt', encoding='utf-8').read().splitlines()
           for f in files:
-              shutil.copy(os.path.join(os.environ['GITHUB_WORKSPACE'], 'audio', f), f"site/files/{f}")
+              shutil.copy(f"src/{f}", f"site/files/{f}")
           print(f"copied {len(files)} files")
           EOF
           python3 src/build-feed.py --manifest src/tracks.json \
