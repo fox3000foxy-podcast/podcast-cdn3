@@ -65,21 +65,32 @@ jobs:
           shard = int(os.environ['SHARD'])
           want = sorted(t['file'] for t in tracks if t.get('shard') == shard)
           print(f'shard {shard}: {len(want)} files')
-          # ls-tree -z : paths exacts via stdin NUL, aucun glob, aucun
-          # pathspec (crochets/parentheses passent tels quels).
+          # ls-tree -z : paths exacts (aucun glob, crochets/parenthèses
+          # OK). Puis UN SEUL git cat-file --batch (rapide) au lieu d'un
+          # appel par blob (lent sur clone partiel).
           args = ['git', 'ls-tree', '-z', 'HEAD', '--'] + want
           out = subprocess.run(args, capture_output=True, check=True).stdout
           entries = out.rstrip(b'\0').split(b'\0') if out.strip(b'\0') else []
           assert len(entries) == len(want), f"ls-tree returned {len(entries)}/{len(want)}"
           dest = os.environ['GITHUB_WORKSPACE'] + '/audio'
+          batch = subprocess.run(
+              ['git', 'cat-file', '--batch'],
+              input=b''.join(
+                  e.split(b'\t')[0].split(b' ')[2] + b'\n' for e in entries),
+              capture_output=True, check=True).stdout
+          pos, done = 0, 0
           for e in entries:
-              meta, name = e.split(b'\t')
-              _mode, _typ, sha = meta.split(b' ')
-              blob = subprocess.run(['git', 'cat-file', 'blob', sha.decode()],
-                                      capture_output=True, check=True).stdout
+              _meta, name = e.split(b'\t')
+              nl = batch.index(b'\n', pos)
+              _sha, typ, size = batch[pos:nl].split(b' ')
+              pos = nl + 1
+              blob = batch[pos:pos + int(size)]
+              pos += int(size) + 1
+              assert typ == b'blob', f"unexpected {typ} for {name}"
               with open(os.path.join(dest, name.decode('utf-8')), 'wb') as fh:
                   fh.write(blob)
-          print(f"materialized {len(entries)} files")
+              done += 1
+          print(f"materialized {done} files")
           PYEOF2
 
       - name: Assemble static site (shard audio + fragment feed)
