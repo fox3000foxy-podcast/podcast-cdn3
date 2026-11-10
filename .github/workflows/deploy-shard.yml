@@ -43,7 +43,7 @@ jobs:
       - name: Checkout manifest + script from private src
         uses: actions/checkout@v4
         with:
-          repository: fox3000foxy/podcast-src
+          repository: fox3000foxy-podcast/podcast-src
           token: ${{ secrets.SRC_READ_TOKEN }}
           ref: ${{ github.event.client_payload.sha || inputs.src_ref }}
           path: src
