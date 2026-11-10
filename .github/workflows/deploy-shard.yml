@@ -65,15 +65,28 @@ jobs:
           open('/tmp/shard-files.txt','w',encoding='utf-8').write('\n'.join(want))
           print(f'shard $SHARD: {len(want)} files')
           "
-          git sparse-checkout add $(cat /tmp/shard-files.txt | tr '\n' ' ')
-          git checkout -- $(cat /tmp/shard-files.txt | tr '\n' ' ')
+          # NUL-safe : les noms contiennent espaces et unicode, jamais de \n ?
+          # Si : on passe par Python pour sparse-checkout + checkout.
+          python3 - <<'EOF'
+          import subprocess
+          files = open('/tmp/shard-files.txt', encoding='utf-8').read().splitlines()
+          subprocess.run(['git', 'sparse-checkout', 'add', '--'] + files, check=True)
+          subprocess.run(['git', 'checkout', '--'] + files, check=True)
+          print(f"materialized {len(files)} files")
+          EOF
           du -sh .
 
       - name: Assemble static site (shard audio + fragment feed)
         run: |
           set -euo pipefail
           mkdir -p site/files
-          while IFS= read -r f; do cp "src/$f" "site/files/$f"; done < /tmp/shard-files.txt
+          python3 - <<'EOF'
+          import shutil
+          files = open('/tmp/shard-files.txt', encoding='utf-8').read().splitlines()
+          for f in files:
+              shutil.copy(f"src/{f}", f"site/files/{f}")
+          print(f"copied {len(files)} files")
+          EOF
           python3 src/build-feed.py --manifest src/tracks.json \
             --only-shard "$SHARD" \
             --shard-base "https://podcast-cdn$SHARD.fox3000foxy.com/files" \
